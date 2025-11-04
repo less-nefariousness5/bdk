@@ -122,6 +122,13 @@ local menu = {
     -- Remix Time
     REMIX_TIME_MODE = m.combobox(1, id("remix_time_mode")), -- 1 = Off, 2 = Offensive, 3 = Defensive
     REMIX_TIME_MIN_COOLDOWN = m.slider_int(10, 120, 30, id("remix_time_min_cd")), -- Minimum cooldown time in seconds
+
+    -- Advanced
+    ADVANCED_TREE = m.tree_node(),
+    USE_PREDICTION = m.checkbox(true, id("use_prediction")),
+    USE_EVENT_SYSTEM = m.checkbox(true, id("use_event_system")),
+    DND_MIN_HITS = m.slider_int(1, 5, 1, id("dnd_min_hits")),
+    SMART_TARGETING = m.checkbox(true, id("smart_targeting")),
 }
 
 -- Validation Functions
@@ -334,12 +341,19 @@ core.register_on_render_menu_callback(function()
             end
             M.ANTI_AFK:render("Anti-AFK", "Prevent AFK kick with tiny movements")
             M.LEGION_REMIX:render("Legion Remix", "Enable Twisted Crusade and Felspike abilities")
-            
+
             local remix_time_options = { "Off", "Offensive", "Defensive" }
             M.REMIX_TIME_MODE:render("Remix Time Mode", remix_time_options, "Off = Disabled, Offensive = DRW/Tombstone/Bonestorm, Defensive = DRW/Icebound/Vampiric Blood")
             if M.REMIX_TIME_MODE:get() > 1 then
                 M.REMIX_TIME_MIN_COOLDOWN:render("Min Cooldown Time", "Minimum cooldown time (seconds) before casting Remix Time (default: 30)")
             end
+        end)
+
+        M.ADVANCED_TREE:render("Advanced (SDK Features)", function()
+            M.USE_PREDICTION:render("Use Position Prediction", "Use IZI SDK position prediction for ground-targeted abilities (Death and Decay)")
+            M.USE_EVENT_SYSTEM:render("Use Event System", "Use event-driven state management instead of polling (recommended)")
+            M.DND_MIN_HITS:render("Death and Decay Min Hits", "Minimum enemies to hit with Death and Decay when using prediction (1 = 100% uptime)")
+            M.SMART_TARGETING:render("Smart Target Selection", "Use SDK helpers to pick optimal targets (lowest HP, etc.)")
         end)
     end)
 end)
