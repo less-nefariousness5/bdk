@@ -1,4 +1,25 @@
 ---@diagnostic disable: undefined-global, lowercase-global
+--[[
+    Blood Death Knight - Main Rotation
+
+    Version: 1.1.0 (SDK Enhanced)
+
+    Recent Improvements:
+    - Event-driven state management using IZI SDK event subscriptions
+    - Advanced cast options with position prediction for Death and Decay
+    - Smart targeting using SDK helpers (pick_enemy)
+    - Defensive SDK call wrappers with error handling
+    - Simplified Vampiric Blood filters (HP-based only)
+    - Configurable advanced features via menu
+
+    SDK Features Used:
+    - on_buff_gain/on_buff_lose for DRW tracking
+    - Position prediction for ground-targeted abilities
+    - pick_enemy for smart target selection
+    - Defensive cast filters
+    - Safe call wrappers for error handling
+]]
+
 local izi = require("common/izi_sdk")
 local enums = require("common/enums")
 local BUFFS = enums.buff_db
@@ -6,6 +27,7 @@ local SPELLS = require("spells")
 local menu = require("menu")
 local unit_helper = require("common/utility/unit_helper")
 local dungeons_helper = require("common/utility/dungeons_helper")
+local state_manager = require("state_manager")
 local legion_esp = require("modules/qol/legion_remix_esp")
 local legion_remix = require("modules/qol/legion_remix")
 local auto_loot = require("modules/qol/auto_loot")
@@ -36,10 +58,69 @@ local REMIX_TIME_DEFENSIVE_SPELLS = {
     SPELLS.VAMPIRIC_BLOOD,
 }
 
--- State tracking for DRW Blood Boil
-local drw_blood_boil_casted = false  -- Track if Blood Boil was cast in current DRW window
-local last_drw_start_time = 0  -- Track when DRW started
-local last_death_strike_time = 0  -- Track last Death Strike cast time to prevent back-to-back
+-- State tracking (now managed by state_manager.lua for event-driven updates)
+-- These variables kept for backward compatibility during transition
+local drw_blood_boil_casted = false  -- Will be replaced by state_manager
+local last_drw_start_time = 0  -- Will be replaced by state_manager
+local last_death_strike_time = 0  -- Will be replaced by state_manager
+
+-- ============================================================================
+-- DEFENSIVE SDK WRAPPERS
+-- ============================================================================
+
+---Safe wrapper for SDK calls with error handling
+---@param fn function
+---@param default any
+---@return any
+local function safe_call(fn, default)
+    local success, result = pcall(fn)
+    if not success then
+        return default
+    end
+    return result
+end
+
+---Safe get health percentage with fallback
+---@param unit game_object
+---@return number
+local function safe_get_health_pct(unit)
+    if not (unit and unit.is_valid and unit:is_valid()) then
+        return 100
+    end
+    return safe_call(function() return unit:get_health_percentage() end, 100)
+end
+
+---Safe get runic power with fallback
+---@param unit game_object
+---@return number
+local function safe_get_runic_power(unit)
+    if not (unit and unit.is_valid and unit:is_valid()) then
+        return 0
+    end
+    return safe_call(function() return unit:runic_power_current() end, 0)
+end
+
+-- ============================================================================
+-- SMART TARGETING HELPERS (SDK)
+-- ============================================================================
+
+---Pick best enemy using SDK's pick_enemy helper
+---@param radius number
+---@return game_object|nil
+local function pick_best_enemy(radius)
+    if not menu.SMART_TARGETING:get_state() then
+        return nil
+    end
+
+    -- Use SDK's pick_enemy to find lowest HP target
+    return izi.pick_enemy(radius, false, function(u)
+        if not (u and u:is_valid() and u:is_alive()) then
+            return nil
+        end
+        -- Return HP percentage for sorting (lower is better for execute)
+        return u:get_health_percentage()
+    end, "min")
+end
 
 -- Death Strike debugging
 local function log_death_strike(me, reason)
@@ -679,6 +760,7 @@ local function defensives(me, target)
     -- Priority 2: Vampiric Blood (~50%+ mitigation)
     -- Can be used reactively - health drops by up to 23% when buff expires
     -- Only check if we're not already stacking too many defensives
+    -- Note: Vampiric Blood is a base health increase defensive, not damage-type specific
     if not has_stacked_defensive(me) then
         if menu.validate_vampiric_blood(me) then
             if not me:has_buff(BUFF_VAMPIRIC_BLOOD) then
@@ -686,6 +768,7 @@ local function defensives(me, target)
                 local vb_filters = {
                     health_percentage_threshold_raw = menu.VAMPIRIC_BLOOD_HP:get(),
                     health_percentage_threshold_incoming = menu.VAMPIRIC_BLOOD_INCOMING_HP:get(),
+                    -- No physical/magical thresholds: VB is HP-based, not damage-type specific
                 }
                 local opts = { skip_gcd = true }
                 if SPELLS.VAMPIRIC_BLOOD_DEFENSIVE:cast_defensive(me, vb_filters, "Vampiric Blood", opts) then
@@ -1288,9 +1371,22 @@ local function deathbringer_rotation(me, target, enemies)
     -- Priority 11: Death and Decay
     if not block_rune_spending then
         if not me:has_buff(BUFF_DEATH_AND_DECAY) then
-            if not me:is_moving() and can_afford_rune_spender(me, 1, true) then
-                local self_pos = me:get_position()
-                if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", { cast_pos = self_pos }) then
+            if can_afford_rune_spender(me, 1, true) then
+                -- Use advanced cast options with prediction for optimal placement
+                local cast_opts = {
+                    use_prediction = menu.USE_PREDICTION:get_state(),
+                    prediction_type = "MOST_HITS",
+                    geometry = "CIRCLE",
+                    aoe_radius = 10,
+                    min_hits = menu.DND_MIN_HITS:get(),  -- Default: 1 for 100% uptime
+                }
+
+                -- Fallback to self position if prediction disabled
+                if not cast_opts.use_prediction then
+                    cast_opts.cast_pos = me:get_position()
+                end
+
+                if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", cast_opts) then
                     return true
                 end
             end
@@ -1450,10 +1546,21 @@ local function san_drw_rotation(me, target, enemies)
         local has_dnd = me:has_buff(BUFF_DEATH_AND_DECAY)
         local has_crimson = me:has_buff(BUFF_CRIMSON_SCOURGE)
         if (active_enemies <= 3 and has_crimson) or (active_enemies > 3 and not has_dnd) then
-            -- Only cast if not moving and at self position
-            if not me:is_moving() and can_afford_rune_spender(me, 1, true) then
-                local self_pos = me:get_position()
-                if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", { cast_pos = self_pos }) then
+            if can_afford_rune_spender(me, 1, true) then
+                -- Use advanced cast options with prediction for optimal placement
+                local cast_opts = {
+                    use_prediction = menu.USE_PREDICTION:get_state(),
+                    prediction_type = "MOST_HITS",
+                    geometry = "CIRCLE",
+                    aoe_radius = 10,
+                    min_hits = menu.DND_MIN_HITS:get(),
+                }
+
+                if not cast_opts.use_prediction then
+                    cast_opts.cast_pos = me:get_position()
+                end
+
+                if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", cast_opts) then
                     return true
                 end
             end
@@ -1722,12 +1829,24 @@ local function sanlayn_rotation(me, target, enemies)
         if not me:has_buff(BUFF_DEATH_AND_DECAY) then
             local has_crimson = me:has_buff(BUFF_CRIMSON_SCOURGE)
             local has_visceral = me:has_buff(BUFF_VISCERAL_STRENGTH)
-            
+
             -- 4+ targets OR (Crimson Scourge active AND Visceral Strength not active)
             if active_enemies >= 4 or (has_crimson and not has_visceral) then
-                if not me:is_moving() and can_afford_rune_spender(me, 1, true) then
-                    local self_pos = me:get_position()
-                    if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", { cast_pos = self_pos }) then
+                if can_afford_rune_spender(me, 1, true) then
+                    -- Use advanced cast options with prediction for optimal placement
+                    local cast_opts = {
+                        use_prediction = menu.USE_PREDICTION:get_state(),
+                        prediction_type = "MOST_HITS",
+                        geometry = "CIRCLE",
+                        aoe_radius = 10,
+                        min_hits = menu.DND_MIN_HITS:get(),
+                    }
+
+                    if not cast_opts.use_prediction then
+                        cast_opts.cast_pos = me:get_position()
+                    end
+
+                    if SPELLS.DEATH_AND_DECAY:cast_safe(nil, "Death and Decay", cast_opts) then
                         return true
                     end
                 end
@@ -1822,31 +1941,46 @@ core.register_on_update_callback(function()
         return
     end
 
-    -- Update cached values
+    -- Update state manager (event-driven + cached state)
+    if menu.USE_EVENT_SYSTEM:get_state() then
+        state_manager.update(me)
+        local state = state_manager.get_state()
+
+        -- Use state from state_manager (event-driven)
+        drw_blood_boil_casted = state.drw.blood_boil_casted
+        last_drw_start_time = state.drw.start_time
+        runic_power = state.resources.runic_power
+        runic_power_deficit = state.resources.runic_power_deficit
+        runes = state.resources.runes
+        bone_shield_stacks = state.bone_shield.stacks
+        bone_shield_remains = state.bone_shield.remains
+    else
+        -- Fallback to polling (old method)
+        runic_power = safe_get_runic_power(me)
+        runic_power_deficit = me:runic_power_deficit()
+        runes = me:rune_count()
+        bone_shield_stacks = me:get_buff_stacks(BUFF_BONE_SHIELD)
+        bone_shield_remains = me:buff_remains_sec(BUFF_BONE_SHIELD) or 0
+
+        -- Track DRW state and reset Blood Boil tracking when DRW starts (polling)
+        local has_drw_now = me:has_buff(BUFF_DANCING_RUNE_WEAPON)
+        if has_drw_now then
+            if last_drw_start_time == 0 or (izi.now() - last_drw_start_time) > 60 then
+                drw_blood_boil_casted = false
+                last_drw_start_time = izi.now()
+            end
+        else
+            if last_drw_start_time > 0 then
+                drw_blood_boil_casted = false
+                last_drw_start_time = 0
+            end
+        end
+    end
+
+    -- Update other cached values
     ping_ms = core.get_ping()
     ping_sec = ping_ms / 1000
     gcd = me:gcd()
-    runic_power = me:runic_power_current()
-    runic_power_deficit = me:runic_power_deficit()
-    runes = me:rune_count()
-    bone_shield_stacks = me:get_buff_stacks(BUFF_BONE_SHIELD)
-    bone_shield_remains = me:buff_remains_sec(BUFF_BONE_SHIELD) or 0
-
-    -- Track DRW state and reset Blood Boil tracking when DRW starts
-    local has_drw_now = me:has_buff(BUFF_DANCING_RUNE_WEAPON)
-    if has_drw_now then
-        -- If DRW just started (wasn't active before), reset Blood Boil tracking
-        if last_drw_start_time == 0 or (izi.now() - last_drw_start_time) > 60 then
-            drw_blood_boil_casted = false
-            last_drw_start_time = izi.now()
-        end
-    else
-        -- DRW not active, reset tracking
-        if last_drw_start_time > 0 then
-            drw_blood_boil_casted = false
-            last_drw_start_time = 0
-        end
-    end
 
     -- Cache Bone Shield emergency state with forecasting (only calculated once per frame)
     local min_bone_shield = menu.BONE_SHIELD_MIN_STACKS:get()
@@ -1979,8 +2113,14 @@ core.register_on_update_callback(function()
 end)
 
 -- ============================================================================
--- ESP MODULE REGISTRATION
+-- MODULE INITIALIZATION
 -- ============================================================================
+
+-- Initialize state manager (event-driven state tracking)
+if menu.USE_EVENT_SYSTEM:get_state() then
+    state_manager.init()
+    core.log("[BDK] State Manager initialized (event-driven mode)")
+end
 
 -- Initialize ESP module
 if legion_esp then
