@@ -105,10 +105,19 @@ function M.execute(me, spells, menu, constants)
                     if mouseover:is_dead() and not mouseover:is_ghost() then
                         -- Check if it's a party member
                         if mouseover:is_party_member() then
-                            -- Check if spell is learned and castable
-                            if spells.RAISE_ALLY:is_learned() and spells.RAISE_ALLY:is_castable() then
-                                if spells.RAISE_ALLY:cast_safe(mouseover, "Raise Ally") then
-                                    return true
+                            -- Check if spell is learned and castable to the mouseover unit
+                            if spells.RAISE_ALLY:is_learned() then
+                                -- Check if spell is castable to the specific mouseover unit
+                                -- Use options to skip range/facing checks for dead units
+                                local cast_opts = {
+                                    skip_range = true,  -- Dead units may fail range checks
+                                    skip_facing = true  -- Dead units may fail facing checks
+                                }
+                                
+                                if spells.RAISE_ALLY:is_castable_to_unit(mouseover, cast_opts) then
+                                    if spells.RAISE_ALLY:cast_safe(mouseover, "Raise Ally", cast_opts) then
+                                        return true
+                                    end
                                 end
                             end
                         end
@@ -235,15 +244,26 @@ function M.execute(me, spells, menu, constants)
                 all_on_cooldown = false
                 break
             end
+
+            -- Check if this spell's cooldown meets the minimum threshold
+            -- ALL spells must be >= threshold for Remix Time to be used
+            local min_cooldown_sec = menu.REMIX_TIME_MIN_COOLDOWN:get()
+            if cooldown_sec < min_cooldown_sec then
+                all_on_cooldown = false
+                break
+            end
         end
 
-        -- Only use Remix Time if all spells are learned AND all are on cooldown
+        -- Only cast Remix Time if ALL spells are learned, ALL are on cooldown,
+        -- and ALL cooldowns are >= minimum threshold
         if all_learned and all_on_cooldown then
-            -- Use SDK's Remix Time usage helper
-            -- This is handled by the legion_remix module (if available)
-            -- For now, just log that we would use it
-            if max_cooldown_sec > 0 then
-                core.log(string.format("[Remix Time] Would use: all cooldowns on CD (max: %.1fs)", max_cooldown_sec))
+            -- Check if Remix Time spell is available
+            if spells.REMIX_TIME:is_learned() then
+                if spells.REMIX_TIME:is_castable() then
+                    if spells.REMIX_TIME:cast_safe(nil, "Remix Time (Refresh Cooldowns)") then
+                        return true
+                    end
+                end
             end
         end
     end

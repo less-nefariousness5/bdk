@@ -110,7 +110,10 @@ local bone_shield_state = {
 
 -- Targeting state (updated each frame)
 local targeting_state = {
-    current_target = nil,
+    manual_target = nil,  -- Manually selected HUD target
+    melee_target = nil,   -- Best target for melee spells (always in melee range)
+    ranged_target = nil,  -- Best target for ranged spells (prefers manual if in range)
+    current_target = nil, -- Legacy field (kept for compatibility, same as manual_target)
     enemies = {},
     detected_hero_tree = HERO_TREE_NONE,
 }
@@ -136,15 +139,15 @@ legion_remix.init(menu.REMIX_TIME_MODE)
 
 core.register_on_update_callback(function()
     -- Get player unit
-    me = core.object_manager.get_player()
+    me = izi.me()
     if not sdk_helpers.validate_player(me) then
         return
     end
 
     -- Update ping/latency
-    ping_ms = izi.ping()
+    ping_ms = core.get_ping()
     ping_sec = ping_ms / 1000
-    gcd = izi.gcd()
+    gcd = me:gcd()
 
     -- ========================================================================
     -- UPDATE STATE MANAGERS
@@ -152,7 +155,7 @@ core.register_on_update_callback(function()
 
     -- Update state manager (event-driven or polling fallback)
     if menu.USE_EVENT_SYSTEM:get_state() then
-        state_manager.update(me, BUFFS_TABLE)
+        state_manager.update(me)
         resource_state.drw_blood_boil_casted = state_manager.get_drw_blood_boil_casted()
         resource_state.last_death_strike_time = state_manager.get_last_death_strike_time()
     end
@@ -176,7 +179,8 @@ core.register_on_update_callback(function()
     )
 
     -- Update targeting state
-    targeting_state.current_target = me:get_target()
+    targeting_state.manual_target = me:get_target()
+    targeting_state.current_target = targeting_state.manual_target  -- Legacy compatibility
     targeting_state.enemies = izi.enemies(40)
 
     -- Detect hero tree (cache for this frame)
@@ -184,10 +188,15 @@ core.register_on_update_callback(function()
         targeting_state.detected_hero_tree = targeting.detect_hero_tree(me, menu, SPELLS, izi)
     end
 
-    -- Validate target
-    if not sdk_helpers.validate_target(me, targeting_state.current_target) then
+    -- Validate manual target
+    if not sdk_helpers.validate_target(me, targeting_state.manual_target) then
+        targeting_state.manual_target = nil
         targeting_state.current_target = nil
     end
+
+    -- Update smart targets using new targeting functions
+    targeting_state.melee_target = targeting.get_best_melee_target(me, targeting_state.manual_target, targeting_state.enemies, 5)
+    targeting_state.ranged_target = targeting.get_best_ranged_target(me, targeting_state.manual_target, targeting_state.enemies, 30)
 
     -- ========================================================================
     -- ROTATION PRIORITY SYSTEM
@@ -210,6 +219,13 @@ core.register_on_update_callback(function()
         gcd
     ) then
         return
+    end
+
+    -- Priority 2.5: Legion Remix (Twisted Crusade/Felspike)
+    if targeting_state.current_target and me:affecting_combat() then
+        if legion_remix.Execute(legion_remix, me, targeting_state.current_target, menu) then
+            return
+        end
     end
 
     -- Priority 3: Interrupts (Asphyxiate, Mind Freeze, Blinding Sleet, Death Grip)
@@ -243,8 +259,8 @@ core.register_on_update_callback(function()
             -- Check if DRW is active and use appropriate rotation
             local has_drw = me:has_buff(BUFFS_TABLE.DANCING_RUNE_WEAPON)
 
-            if has_drw and menu.USE_DRW_ROTATION:get_state() then
-                -- Use aggressive DRW rotation
+            if has_drw then
+                -- Use aggressive DRW rotation when DRW buff is active
                 sanlayn.execute_drw(
                     me,
                     SPELLS,
@@ -258,7 +274,7 @@ core.register_on_update_callback(function()
                     gcd
                 )
             else
-                -- Use normal San'layn rotation
+                -- Use normal San'layn rotation when DRW is not active
                 sanlayn.execute(
                     me,
                     SPELLS,

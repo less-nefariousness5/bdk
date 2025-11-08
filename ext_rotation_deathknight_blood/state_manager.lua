@@ -136,6 +136,18 @@ function M.time_since_death_strike(now)
     return now - state.last_abilities.death_strike
 end
 
+---Get last Death Strike timestamp
+---@return number
+function M.get_last_death_strike_time()
+    return state.last_abilities.death_strike
+end
+
+---Get DRW Blood Boil casted status
+---@return boolean
+function M.get_drw_blood_boil_casted()
+    return state.drw.blood_boil_casted
+end
+
 ---Mark Blood Boil as casted during DRW
 function M.mark_drw_blood_boil_casted()
     state.drw.blood_boil_casted = true

@@ -79,23 +79,27 @@ end
 ---@param gcd number Current GCD duration
 ---@return boolean success True if an action was taken
 function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shield_manager, targeting, base, gcd)
-    local target = targeting.current_target
+    -- Use smart targeting: melee_target for melee spells, ranged_target for ranged spells
+    local melee_target = targeting.melee_target
+    local ranged_target = targeting.ranged_target
+    local manual_target = targeting.manual_target  -- For checks that need the manual target
     local enemies = targeting.enemies
     local active_enemies = #enemies
 
-    if not (target and target:is_valid() and me:can_attack(target)) then
+    -- Need at least a melee target or ranged target to continue rotation
+    if not melee_target and not ranged_target then
         return false
     end
 
     local has_drw = me:has_buff(base.BUFF_DANCING_RUNE_WEAPON)
     local now = izi.now()
 
-    -- Priority 1: Death Strike below 70% health
-    if me:get_health_percentage() < 70 then
+    -- Priority 1: Death Strike below 70% health (melee spell)
+    if me:get_health_percentage() < 70 and melee_target then
         -- Prevent back-to-back Death Strikes (wait at least 1 second)
         if (now - resource_manager.last_death_strike_time) >= 1.0 then
             local success, new_time = base.cast_death_strike(
-                me, target, spells, "<70% HP",
+                me, melee_target, spells, "<70% HP",
                 resource_manager.runic_power,
                 resource_manager.runic_power_deficit,
                 resource_manager.runes,
@@ -108,8 +112,8 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         end
     end
 
-    -- Priority 2: Marrowrend for Bone Shield maintenance
-    if not bone_shield_manager.block_rune_spending then
+    -- Priority 2: Marrowrend for Bone Shield maintenance (melee spell)
+    if not bone_shield_manager.block_rune_spending and melee_target then
         local bone_shield_active = me:has_buff(base.BUFF_BONE_SHIELD)
         local bone_shield_low = not bone_shield_active or bone_shield_manager.bone_shield_remains < 5 or bone_shield_manager.bone_shield_stacks < 3
 
@@ -122,7 +126,7 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
 
         if bone_shield_low or exterminate_with_rm then
             if can_afford_rune_spender(me, 2, true, menu, gcd) then
-                if spells.MARROWREND:cast_safe(target, "Marrowrend [Bone Shield]") then
+                if spells.MARROWREND:cast_safe(melee_target, "Marrowrend [Bone Shield]") then
                     return true
                 end
             end
@@ -134,7 +138,7 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         if spells.BLOOD_BOIL:is_castable() and can_afford_rune_spender(me, 1, true, menu, gcd) then
             local success, new_drw_state = base.cast_blood_boil(
                 me, enemies, spells, "Blood Boil [Plague]",
-                nil, resource_manager.drw_blood_boil_casted
+                nil, resource_manager.drw_blood_boil_casted, manual_target
             )
             if success then
                 resource_manager.drw_blood_boil_casted = new_drw_state
@@ -143,29 +147,46 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         end
     end
 
+    -- Priority 4: Dancing Rune Weapon (offensive cooldown)
+    if menu.DRW_CHECK:get_state() and spells.DANCING_RUNE_WEAPON:is_learned() and spells.DANCING_RUNE_WEAPON:is_castable() then
+        if not has_drw then
+            -- Use manual target for TTD check if available, otherwise use melee or ranged target
+            local ttd_target = manual_target or melee_target or ranged_target
+            if ttd_target then
+                local ttd = ttd_target:time_to_die()
+                if menu.validate_drw(ttd) then
+                    if spells.DANCING_RUNE_WEAPON:cast_safe(nil, "Dancing Rune Weapon") then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
     -- Priority 5: Bonestorm
+    -- Only use when: 7+ Bone Shield stacks, Death and Decay active, DRW has 25s+ cooldown remaining
     if menu.BONESTORM_CHECK:get_state() and spells.BONESTORM:is_learned() and spells.BONESTORM:is_castable() then
-        -- Check DRW buff directly to ensure it's not active (don't rely on cached has_drw)
+        -- Check DRW buff directly to ensure it's not active
         local drw_active = me:has_buff(base.BUFF_DANCING_RUNE_WEAPON)
         local drw_cd = spells.DANCING_RUNE_WEAPON:cooldown_remains()
-        local drw_on_cd = not drw_active and drw_cd > 0
-
-        if bone_shield_manager.bone_shield_stacks > 6 and me:has_buff(base.BUFF_DEATH_AND_DECAY) and drw_on_cd then
+        
+        -- Only use Bonestorm if: 7+ stacks, D&D active, DRW not active, and DRW has 25s+ cooldown
+        if bone_shield_manager.bone_shield_stacks >= 7 and me:has_buff(base.BUFF_DEATH_AND_DECAY) and not drw_active and drw_cd >= 25 then
             if spells.BONESTORM:cast_safe(nil, "Bonestorm") then
                 return true
             end
         end
     end
 
-    -- Priority 6: Death Strike RP Capping
+    -- Priority 6: Death Strike RP Capping (melee spell)
     -- RP > 105 (or RP > 99 when DRW active)
     local drw_active = me:has_buff(base.BUFF_DANCING_RUNE_WEAPON)
     local rp_threshold = drw_active and 99 or 105
-    if resource_manager.runic_power > rp_threshold then
+    if resource_manager.runic_power > rp_threshold and melee_target then
         -- Prevent back-to-back Death Strikes
         if (now - resource_manager.last_death_strike_time) >= 1.0 then
             local success, new_time = base.cast_death_strike(
-                me, target, spells, string.format("RP CAP (threshold: %d)", rp_threshold),
+                me, melee_target, spells, string.format("RP CAP (threshold: %d)", rp_threshold),
                 resource_manager.runic_power,
                 resource_manager.runic_power_deficit,
                 resource_manager.runes,
@@ -178,9 +199,9 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         end
     end
 
-    -- Priority 7: Reaper's Mark
+    -- Priority 7: Reaper's Mark (ranged spell)
     if menu.REAPERS_MARK_CHECK:get_state() and spells.REAPERS_MARK:is_learned() and spells.REAPERS_MARK:is_castable() then
-        if spells.REAPERS_MARK:cast_safe(target, "Reaper's Mark") then
+        if ranged_target and spells.REAPERS_MARK:cast_safe(ranged_target, "Reaper's Mark") then
             return true
         end
     end
@@ -251,15 +272,16 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         local at_2_exterminate = exterminate_stacks == 2
         local exterminate_condition = false
 
-        if at_2_exterminate and target and target:is_valid() and me:can_attack(target) then
-            local rm_explodes_soon = reapers_mark_explodes_soon(target, base)
+        -- Check manual target for Reaper's Mark debuff (ranged spell, so check manual target)
+        if at_2_exterminate and manual_target and manual_target:is_valid() and me:can_attack(manual_target) then
+            local rm_explodes_soon = reapers_mark_explodes_soon(manual_target, base)
             exterminate_condition = rm_explodes_soon
         end
 
-        -- Cast if either condition is met
-        if bone_shield_condition or exterminate_condition then
+        -- Cast if either condition is met (melee spell, use melee_target)
+        if (bone_shield_condition or exterminate_condition) and melee_target then
             if can_afford_rune_spender(me, 2, true, menu, gcd) then
-                if spells.MARROWREND:cast_safe(target, "Marrowrend [Stack Maintenance]") then
+                if spells.MARROWREND:cast_safe(melee_target, "Marrowrend [Stack Maintenance]") then
                     return true
                 end
             end
@@ -267,23 +289,25 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
     end
 
     -- Priority 10: Tombstone
+    -- Only use when: 7+ Bone Shield stacks, Death and Decay active, DRW has 25s+ cooldown remaining
     if menu.TOMBSTONE_CHECK:get_state() and spells.TOMBSTONE:is_learned() and spells.TOMBSTONE:is_castable() then
-        -- Check DRW buff directly to ensure it's not active (don't rely on cached has_drw)
-        if bone_shield_manager.bone_shield_stacks > 7 and me:has_buff(base.BUFF_DEATH_AND_DECAY) and not me:has_buff(base.BUFF_DANCING_RUNE_WEAPON) then
-            local drw_cd = spells.DANCING_RUNE_WEAPON:cooldown_remains()
-            if drw_cd > 25 then
-                if spells.TOMBSTONE:cast_safe(nil, "Tombstone") then
-                    return true
-                end
+        -- Check DRW buff directly to ensure it's not active
+        local drw_active = me:has_buff(base.BUFF_DANCING_RUNE_WEAPON)
+        local drw_cd = spells.DANCING_RUNE_WEAPON:cooldown_remains()
+        
+        -- Only use Tombstone if: 7+ stacks, D&D active, DRW not active, and DRW has 25s+ cooldown
+        if bone_shield_manager.bone_shield_stacks >= 7 and me:has_buff(base.BUFF_DEATH_AND_DECAY) and not drw_active and drw_cd >= 25 then
+            if spells.TOMBSTONE:cast_safe(nil, "Tombstone") then
+                return true
             end
         end
     end
 
-    -- Priority 11: Death and Decay
+    -- Priority 11: Death and Decay (maintain 100% uptime with charges)
     if not bone_shield_manager.block_rune_spending then
-        if not me:has_buff(base.BUFF_DEATH_AND_DECAY) then
+        if base.should_refresh_death_and_decay(me, spells, gcd) then
             if can_afford_rune_spender(me, 1, true, menu, gcd) then
-                if base.cast_death_and_decay(me, spells, menu) then
+                if base.cast_death_and_decay(me, spells, menu, enemies) then
                     return true
                 end
             end
@@ -296,7 +320,7 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
             if spells.BLOOD_BOIL:is_castable() and can_afford_rune_spender(me, 1, true, menu, gcd) then
                 local success, new_drw_state = base.cast_blood_boil_simple(
                     me, enemies, spells, "Blood Boil [First in DRW]",
-                    resource_manager.drw_blood_boil_casted
+                    resource_manager.drw_blood_boil_casted, manual_target
                 )
                 if success then
                     resource_manager.drw_blood_boil_casted = new_drw_state
@@ -306,28 +330,28 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         end
     end
 
-    -- Priority 13: Marrowrend with Exterminate
-    if not bone_shield_manager.block_rune_spending then
+    -- Priority 13: Marrowrend with Exterminate (melee spell)
+    if not bone_shield_manager.block_rune_spending and melee_target then
         if me:has_buff(BUFF_EXTERMINATE) and not has_drw then
             if can_afford_rune_spender(me, 2, true, menu, gcd) then
-                if spells.MARROWREND:cast_safe(target, "Marrowrend [Exterminate]") then
+                if spells.MARROWREND:cast_safe(melee_target, "Marrowrend [Exterminate]") then
                     return true
                 end
             end
         end
     end
 
-    -- Priority 14: Heart Strike with 2+ runes
-    if not bone_shield_manager.block_rune_spending then
+    -- Priority 14: Heart Strike with 2+ runes (melee spell)
+    if not bone_shield_manager.block_rune_spending and melee_target then
         if me:rune_count() >= 2 and can_afford_rune_spender(me, 1, true, menu, gcd) then
-            if base.cast_heart_strike(target, spells, "Heart Strike") then
+            if base.cast_heart_strike(melee_target, spells, "Heart Strike") then
                 return true
             end
         end
     end
 
-    -- Priority 15: Consumption
-    if not bone_shield_manager.block_rune_spending then
+    -- Priority 15: Consumption (melee spell)
+    if not bone_shield_manager.block_rune_spending and melee_target then
         if spells.CONSUMPTION:is_learned() and spells.CONSUMPTION:is_castable() then
             if can_afford_rune_spender(me, 1, true, menu, gcd) then
                 if spells.CONSUMPTION:cast_safe(nil, "Consumption") then
@@ -342,7 +366,7 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         if spells.BLOOD_BOIL:is_castable() and can_afford_rune_spender(me, 1, true, menu, gcd) then
             local success, new_drw_state = base.cast_blood_boil_simple(
                 me, enemies, spells, "Blood Boil",
-                resource_manager.drw_blood_boil_casted
+                resource_manager.drw_blood_boil_casted, manual_target
             )
             if success then
                 resource_manager.drw_blood_boil_casted = new_drw_state
@@ -351,18 +375,18 @@ function M.execute(me, spells, menu, buffs, debuffs, resource_manager, bone_shie
         end
     end
 
-    -- Priority 17: Heart Strike
-    if not bone_shield_manager.block_rune_spending then
+    -- Priority 17: Heart Strike (melee spell)
+    if not bone_shield_manager.block_rune_spending and melee_target then
         if can_afford_rune_spender(me, 1, true, menu, gcd) then
-            if base.cast_heart_strike(target, spells, "Heart Strike") then
+            if base.cast_heart_strike(melee_target, spells, "Heart Strike") then
                 return true
             end
         end
     end
 
-    -- Priority 18: Death's Caress
-    if spells.DEATHS_CARESS:is_castable() then
-        if spells.DEATHS_CARESS:cast_safe(target, "Death's Caress") then
+    -- Priority 18: Death's Caress (ranged spell)
+    if spells.DEATHS_CARESS:is_castable() and ranged_target then
+        if spells.DEATHS_CARESS:cast_safe(ranged_target, "Death's Caress") then
             return true
         end
     end

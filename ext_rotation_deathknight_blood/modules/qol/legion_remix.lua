@@ -29,6 +29,14 @@ local M = {}
 M.last_felspike_state = nil
 M.last_twisted_debug = 0
 
+---Initialize Legion Remix module
+---@param remix_time_mode_menu_element table Menu element for Remix Time mode
+function M.init(remix_time_mode_menu_element)
+    -- Store menu reference if needed for future use
+    M.remix_time_mode_menu = remix_time_mode_menu_element
+    -- Module initialized (no additional setup needed)
+end
+
 ---Execute Legion Remix rotation
 ---@param player game_object
 ---@param target game_object
@@ -53,7 +61,6 @@ function M:Execute(player, target, menu)
     end
     
     local twisted_crusade_buff_active = player:buff_up(C.LEGION_REMIX.TWISTED_CRUSADE_BUFF)
-    local felspike_spell_available = false
     
     -- Check if we have Felspike aura OR if Twisted Crusade has transformed
     local felspike_aura_active = player:buff_up(C.LEGION_REMIX.FELSPIKE_BUFF)
@@ -66,18 +73,8 @@ function M:Execute(player, target, menu)
         M.last_felspike_state = felspike_aura_active
     end
     
-    -- Determine if Felspike spell is available
+    -- If Twisted Crusade buff is active, Felspike becomes available
     if twisted_crusade_buff_active then
-        if felspike_aura_active then
-            felspike_spell_available = true
-        elseif felspike_spell_learned then
-            felspike_spell_available = true
-        else
-            felspike_spell_available = true
-        end
-    end
-    
-    if twisted_crusade_buff_active and felspike_spell_available then
         -- Felspike is available: Use main.lua timing logic
         local twisted_crusade_remaining_sec = player:buff_remains_sec(C.LEGION_REMIX.TWISTED_CRUSADE_BUFF) or 0
         local nearby_enemies = target:get_enemies_in_splash_range_count(8)
@@ -116,7 +113,7 @@ function M:Execute(player, target, menu)
             end
         end
     else
-        -- Felspike not available: Cast Twisted Crusade
+        -- Twisted Crusade buff not active: Cast Twisted Crusade
         if S.TWISTED_CRUSADE:cast_safe(player, "Twisted Crusade", {skip_facing = true, skip_range = true, skip_gcd = true}) then
             return true
         end

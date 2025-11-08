@@ -129,7 +129,7 @@ local function count_table_keys(tbl)
 end
 
 ---Initialize ESP module
-function M:Initialize()
+function M.init()
     -- Log initialization
     core.log("[Legion Remix ESP] Initialized - Tracking " ..
              count_table_keys(TRACKED_OBJECTS) .. " object IDs")

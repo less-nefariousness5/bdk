@@ -225,6 +225,137 @@ function M.is_target_in_range(target, range)
 end
 
 -- ============================================================================
+-- SPELL CLASSIFICATION
+-- ============================================================================
+
+-- Melee spells (require melee range ~5 yards)
+local MELEE_SPELLS = {
+    [195182] = true,  -- MARROWREND
+    [206930] = true,  -- HEART_STRIKE
+    [49998] = true,   -- DEATH_STRIKE
+    [50842] = true,   -- BLOOD_BOIL (10 yard range, but effectively melee)
+    [274156] = true,  -- CONSUMPTION
+    [433895] = true,  -- VAMPIRIC_STRIKE
+}
+
+-- Ranged spells (can cast from range)
+local RANGED_SPELLS = {
+    [195292] = true,  -- DEATHS_CARESS (30 yard range)
+    [439843] = true,  -- REAPERS_MARK (30 yard range)
+    [343294] = true,  -- SOUL_REAPER (30 yard range)
+    [49576] = true,   -- DEATH_GRIP (30 yard range)
+}
+
+---Check if spell requires melee range
+---@param spell_id number Spell ID to check
+---@return boolean is_melee True if spell requires melee range
+function M.is_spell_melee(spell_id)
+    return MELEE_SPELLS[spell_id] == true
+end
+
+---Check if spell can be cast from range
+---@param spell_id number Spell ID to check
+---@return boolean is_ranged True if spell can be cast from range
+function M.is_spell_ranged(spell_id)
+    return RANGED_SPELLS[spell_id] == true
+end
+
+-- ============================================================================
+-- SMART TARGET SELECTION
+-- ============================================================================
+
+---Get best melee target (always finds target in melee range)
+---Prefers manual target if in melee range, otherwise finds nearest enemy in melee range
+---@param me game_object The player object
+---@param manual_target game_object|nil The manually selected HUD target
+---@param enemies table List of enemy units
+---@param melee_range number Melee range threshold (default 5)
+---@return game_object|nil target Best melee target or nil if none found
+function M.get_best_melee_target(me, manual_target, enemies, melee_range)
+    if not me or not me:is_valid() then
+        return nil
+    end
+
+    melee_range = melee_range or 5
+
+    -- Prefer manual target if it's valid and in melee range
+    if manual_target and manual_target:is_valid() and manual_target:is_alive() then
+        if me:can_attack(manual_target) and manual_target:is_in_range(melee_range) then
+            return manual_target
+        end
+    end
+
+    -- Find nearest enemy in melee range
+    if not enemies or #enemies == 0 then
+        return nil
+    end
+
+    local best_target = nil
+    local closest_distance = math.huge
+
+    for _, enemy in ipairs(enemies) do
+        if enemy and enemy:is_valid() and enemy:is_alive() and me:can_attack(enemy) then
+            if enemy:is_in_range(melee_range) then
+                local distance = me:distance_to(enemy)
+                if distance < closest_distance then
+                    closest_distance = distance
+                    best_target = enemy
+                end
+            end
+        end
+    end
+
+    return best_target
+end
+
+---Get best ranged target (prefers manual target if in range, otherwise finds best target)
+---For ranged spells, prefer manual target even if slightly out of range (for movement)
+---@param me game_object The player object
+---@param manual_target game_object|nil The manually selected HUD target
+---@param enemies table List of enemy units
+---@param max_range number Maximum range for the spell (default 30)
+---@return game_object|nil target Best ranged target or nil if none found
+function M.get_best_ranged_target(me, manual_target, enemies, max_range)
+    if not me or not me:is_valid() then
+        return nil
+    end
+
+    max_range = max_range or 30
+
+    -- Prefer manual target if it's valid and in range (or close to range for movement)
+    if manual_target and manual_target:is_valid() and manual_target:is_alive() then
+        if me:can_attack(manual_target) then
+            -- Use manual target if in range, or if slightly out of range (within 5 yards extra for movement)
+            if manual_target:is_in_range(max_range) or manual_target:is_in_range(max_range + 5) then
+                return manual_target
+            end
+        end
+    end
+
+    -- Find best target in range (prefer lowest HP for execute priority)
+    if not enemies or #enemies == 0 then
+        return nil
+    end
+
+    local best_target = nil
+    local lowest_hp = 100
+
+    for _, enemy in ipairs(enemies) do
+        if enemy and enemy:is_valid() and enemy:is_alive() and me:can_attack(enemy) then
+            if enemy:is_in_range(max_range) then
+                local hp_pct = enemy:get_health_percentage()
+                if hp_pct < lowest_hp then
+                    lowest_hp = hp_pct
+                    best_target = enemy
+                end
+            end
+        end
+    end
+
+    return best_target
+end
+
+-- ============================================================================
 -- SPECIAL TARGET CHECKS
 -- ============================================================================
 

@@ -43,6 +43,7 @@ local SPELLS = {
 
     -- Utility
     GOREFRIENDS_GRASP = izi.spell(108199),         -- Mass grip (Mythic+)
+    MIND_FREEZE = izi.spell(47528),               -- Standard interrupt (15s CD)
     ASPHYXIATE = izi.spell(221562),                 -- Stun/Interrupt (4s stun, 45s CD)
     DEATH_GRIP = izi.spell(49576),                  -- Pull interrupt (30yd range, 25s CD, 2 charges with Death's Echo)
     BLINDING_SLEET = izi.spell(207167),             -- AoE cone interrupt/damage smoothing (1m CD)

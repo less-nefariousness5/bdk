@@ -6,16 +6,16 @@
     Main function: execute(me, spells, menu, targeting, gcd)
 
     Handles:
-    - Asphyxiate (non-interruptable casts)
-    - Mind Freeze (standard interrupt)
+    - Mind Freeze (standard interrupt - Priority 1)
+    - Asphyxiate (non-interruptable but stunnable casts)
     - Blinding Sleet (AoE interrupt)
     - Death Grip (ranged interrupts for magic casters)
 
     Priority Order:
-    1. Asphyxiate (non-interruptable casts, melee range)
-    2. Blinding Sleet (AoE interrupt, 2+ casters)
-    3. Death Grip (magic casters at range)
-    4. Mind Freeze (standard interrupt, handled by SDK)
+    1. Mind Freeze (standard interrupt, interruptable casts)
+    2. Asphyxiate (non-interruptable but stunnable casts)
+    3. Blinding Sleet (AoE interrupt, 2+ casters)
+    4. Death Grip (magic casters at range)
 
     Note: Anti-Magic Shell usage as last resort interrupt is handled in defensives module
 
@@ -99,19 +99,36 @@ function M.execute(me, spells, menu, targeting, gcd)
         return false
     end
 
-    -- Priority 1: Asphyxiate for non-interruptable casts (melee range)
-    -- Use when conventional interrupts won't work
-    if menu.ASPHYXIATE_CHECK:get_state() and spells.ASPHYXIATE:is_learned() and spells.ASPHYXIATE:is_castable() then
+    -- Priority 1: Mind Freeze (standard interrupt for interruptable casts)
+    -- Use on any interruptable cast at melee range
+    if spells.MIND_FREEZE:is_learned() and spells.MIND_FREEZE:is_castable() then
         for _, cast_info in ipairs(casting_enemies) do
-            if not cast_info.is_interruptable and cast_info.distance <= 5 then
-                if spells.ASPHYXIATE:cast_safe(cast_info.enemy, string.format("Asphyxiate (Non-Interruptable %.1fs)", cast_info.remaining_sec)) then
+            if cast_info.is_interruptable and cast_info.distance <= 5 then
+                if spells.MIND_FREEZE:cast_safe(cast_info.enemy, string.format("Mind Freeze (%.1fs)", cast_info.remaining_sec)) then
                     return true
                 end
             end
         end
     end
 
-    -- Priority 2: Blinding Sleet for AoE interrupts (multiple enemies casting)
+    -- Priority 2: Asphyxiate for non-interruptable but stunnable casts (melee range)
+    -- Use when spell is non-interruptable but mob is stunnable
+    if menu.ASPHYXIATE_CHECK:get_state() and spells.ASPHYXIATE:is_learned() and spells.ASPHYXIATE:is_castable() then
+        for _, cast_info in ipairs(casting_enemies) do
+            if not cast_info.is_interruptable and cast_info.distance <= 5 then
+                -- Check if enemy is stunnable (not currently stunned)
+                -- If not stunned, we can attempt to stun them
+                local is_stunned, _ = cast_info.enemy:is_stunned()
+                if not is_stunned then
+                    if spells.ASPHYXIATE:cast_safe(cast_info.enemy, string.format("Asphyxiate (Non-Interruptable %.1fs)", cast_info.remaining_sec)) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Priority 3: Blinding Sleet for AoE interrupts (multiple enemies casting)
     -- Use when 2+ enemies are casting (AoE cone in front of player)
     if spells.BLINDING_SLEET:is_learned() and spells.BLINDING_SLEET:is_castable() then
         if casting_count >= 2 then
@@ -122,7 +139,7 @@ function M.execute(me, spells, menu, targeting, gcd)
         end
     end
 
-    -- Priority 3: Death Grip for magic casters at range
+    -- Priority 4: Death Grip for magic casters at range
     -- Prioritize pulling magic casters to melee, especially with Death's Echo (2 charges)
     if menu.DEATH_GRIP_CHECK:get_state() and spells.DEATH_GRIP:is_learned() then
         if spells.DEATH_GRIP:is_castable() then
